@@ -1,9 +1,58 @@
-from typing import Dict, Any, List
+from typing import Dict, Any, List, Optional
 import pandas as pd
 import yfinance as yf
 from datetime import datetime, timedelta
 import random
 import json
+import os
+import pathlib
+
+# Cache directory setup
+CACHE_DIR = pathlib.Path("cache")
+CACHE_DIRS = {
+    "financial_metrics": CACHE_DIR / "financial_metrics",
+    "financial_statements": CACHE_DIR / "financial_statements",
+    "insider_trades": CACHE_DIR / "insider_trades",
+    "market_data": CACHE_DIR / "market_data",
+    "options_data": CACHE_DIR / "options_data",
+    "price_history": CACHE_DIR / "price_history"
+}
+
+# Create cache directories if they don't exist
+for dir_path in CACHE_DIRS.values():
+    dir_path.mkdir(parents=True, exist_ok=True)
+
+def read_cache(cache_type: str, ticker: str, date: Optional[str] = None) -> Optional[Dict]:
+    """Read data from cache"""
+    cache_dir = CACHE_DIRS[cache_type]
+    if date:
+        cache_file = cache_dir / ticker / f"{date}.json"
+    else:
+        cache_file = cache_dir / f"{ticker}.json"
+    
+    try:
+        if cache_file.exists():
+            with open(cache_file, 'r') as f:
+                return json.load(f)
+    except Exception as e:
+        print(f"Error reading cache for {ticker}: {e}")
+    return None
+
+def write_cache(cache_type: str, ticker: str, data: Any, date: Optional[str] = None):
+    """Write data to cache"""
+    cache_dir = CACHE_DIRS[cache_type]
+    if date:
+        ticker_dir = cache_dir / ticker
+        ticker_dir.mkdir(exist_ok=True)
+        cache_file = ticker_dir / f"{date}.json"
+    else:
+        cache_file = cache_dir / f"{ticker}.json"
+    
+    try:
+        with open(cache_file, 'w') as f:
+            json.dump(data, f, indent=2, default=str)
+    except Exception as e:
+        print(f"Error writing cache for {ticker}: {e}")
 
 
 def get_financial_metrics(ticker: str) -> Dict[str, Any]:
@@ -94,6 +143,11 @@ def get_financial_metrics(ticker: str) -> Dict[str, Any]:
 
 def get_financial_statements(ticker: str) -> Dict[str, Any]:
     """获取财务报表数据"""
+    # Check cache first
+    cached_data = read_cache("financial_statements", ticker)
+    if cached_data:
+        return cached_data
+
     stock = yf.Ticker(ticker)
 
     try:
@@ -124,6 +178,8 @@ def get_financial_statements(ticker: str) -> Dict[str, Any]:
         if len(line_items) == 1:
             line_items.append(line_items[0])
 
+        # Save to cache
+        write_cache("financial_statements", ticker, line_items)
         return line_items
 
     except Exception as e:
@@ -141,6 +197,11 @@ def get_financial_statements(ticker: str) -> Dict[str, Any]:
 
 def get_insider_trades(ticker: str) -> List[Dict[str, Any]]:
     """获取内部交易数据"""
+    # Check cache first
+    cached_data = read_cache("insider_trades", ticker)
+    if cached_data:
+        return cached_data
+
     stock = yf.Ticker(ticker)
     try:
         # 获取实际的内部交易数据
@@ -157,30 +218,119 @@ def get_insider_trades(ticker: str) -> List[Dict[str, Any]]:
                 "date": trade.name.strftime("%Y-%m-%d") if hasattr(trade.name, "strftime") else str(trade.name)
             })
 
-        return sorted(trades, key=lambda x: x["date"], reverse=True)
+        trades = sorted(trades, key=lambda x: x["date"], reverse=True)
+        # Save to cache
+        write_cache("insider_trades", ticker, trades)
+        return trades
     except Exception as e:
         print(f"Warning: Error getting insider trades: {e}")
         return []
 
 
 def get_market_data(ticker: str) -> Dict[str, Any]:
-    """获取市场数据"""
+    """获取市场数据，包括VIX和市场情绪指标"""
+    # Check cache first
+    cached_data = read_cache("market_data", ticker)
+    if cached_data:
+        return cached_data
+
     stock = yf.Ticker(ticker)
     info = stock.info
+    
+    # Get VIX data
+    try:
+        vix = yf.Ticker("^VIX")
+        vix_info = vix.history(period="5d")
+        current_vix = float(vix_info['Close'].iloc[-1])
+        vix_50d_avg = float(vix_info['Close'].rolling(window=50).mean().iloc[-1])
+    except Exception as e:
+        print(f"Warning: Error getting VIX data: {e}")
+        current_vix = 0
+        vix_50d_avg = 0
+    
+    # Get Treasury yield for safe haven comparison
+    try:
+        treasury = yf.Ticker("^TNX")  # 10-year Treasury yield
+        treasury_info = treasury.history(period="5d")
+        treasury_yield = float(treasury_info['Close'].iloc[-1])
+    except Exception as e:
+        print(f"Warning: Error getting Treasury data: {e}")
+        treasury_yield = 0
 
-    return {
+    result = {
         "market_cap": info.get("marketCap", 0),
         "volume": info.get("volume", 0),
         "average_volume": info.get("averageVolume", 0),
         "fifty_two_week_high": info.get("fiftyTwoWeekHigh", 0),
-        "fifty_two_week_low": info.get("fiftyTwoWeekLow", 0)
+        "fifty_two_week_low": info.get("fiftyTwoWeekLow", 0),
+        "vix": current_vix,
+        "vix_50d_avg": vix_50d_avg,
+        "treasury_yield": treasury_yield
     }
+    # Save to cache
+    write_cache("market_data", ticker, result)
+    return result
+
+def get_options_data(ticker: str) -> Dict[str, Any]:
+    """获取期权市场数据"""
+    # Check cache first
+    cached_data = read_cache("options_data", ticker)
+    if cached_data:
+        return cached_data
+
+    stock = yf.Ticker(ticker)
+    
+    try:
+        # Get options chain for nearest expiration
+        expirations = stock.options
+        if not expirations:
+            return {"error": "No options data available"}
+            
+        nearest_expiry = expirations[0]
+        opt = stock.option_chain(nearest_expiry)
+        
+        # Calculate put/call ratio
+        total_call_volume = opt.calls['volume'].sum()
+        total_put_volume = opt.puts['volume'].sum()
+        put_call_ratio = total_put_volume / total_call_volume if total_call_volume > 0 else 0
+        
+        # Calculate average implied volatility
+        avg_call_iv = opt.calls['impliedVolatility'].mean()
+        avg_put_iv = opt.puts['impliedVolatility'].mean()
+        
+        # Get volume and open interest
+        call_oi = opt.calls['openInterest'].sum()
+        put_oi = opt.puts['openInterest'].sum()
+        
+        result = {
+            "expiration_date": nearest_expiry,
+            "put_call_ratio": put_call_ratio,
+            "avg_call_iv": float(avg_call_iv),
+            "avg_put_iv": float(avg_put_iv),
+            "total_call_volume": int(total_call_volume),
+            "total_put_volume": int(total_put_volume),
+            "call_open_interest": int(call_oi),
+            "put_open_interest": int(put_oi)
+        }
+        # Save to cache
+        write_cache("options_data", ticker, result)
+        return result
+    except Exception as e:
+        print(f"Warning: Error getting options data: {e}")
+        return {
+            "expiration_date": None,
+            "put_call_ratio": 0,
+            "avg_call_iv": 0,
+            "avg_put_iv": 0,
+            "total_call_volume": 0,
+            "total_put_volume": 0,
+            "call_open_interest": 0,
+            "put_open_interest": 0
+        }
 
 
 def get_price_history(ticker: str, start_date: str = None, end_date: str = None) -> pd.DataFrame:
     """获取历史价格数据，返回与原项目相同格式的数据"""
-    stock = yf.Ticker(ticker)
-
     # 如果没有提供日期，默认获取过去3个月的数据
     if not end_date:
         end_date = datetime.now()
@@ -192,23 +342,36 @@ def get_price_history(ticker: str, start_date: str = None, end_date: str = None)
     else:
         start_date = datetime.strptime(start_date, "%Y-%m-%d")
 
-        # 获取历史数据
-        df = stock.history(start=start_date, end=end_date)
+    # Format dates for cache key
+    start_str = start_date.strftime("%Y-%m-%d")
+    end_str = end_date.strftime("%Y-%m-%d")
+    cache_key = f"{start_str}_{end_str}"
 
-        # 转换为原项目格式的列表
-        prices = []
-        for date, row in df.iterrows():
-            price_dict = {
-                "time": date.strftime("%Y-%m-%d"),
-                "open": float(row["Open"]),
-                "high": float(row["High"]),
-                "low": float(row["Low"]),
-                "close": float(row["Close"]),
-                "volume": int(row["Volume"])
-            }
-            prices.append(price_dict)
+    # Check cache first
+    cached_data = read_cache("price_history", ticker, cache_key)
+    if cached_data:
+        return cached_data
 
-        return prices
+    stock = yf.Ticker(ticker)
+    # 获取历史数据
+    df = stock.history(start=start_date, end=end_date)
+
+    # 转换为原项目格式的列表
+    prices = []
+    for date, row in df.iterrows():
+        price_dict = {
+            "time": date.strftime("%Y-%m-%d"),
+            "open": float(row["Open"]),
+            "high": float(row["High"]),
+            "low": float(row["Low"]),
+            "close": float(row["Close"]),
+            "volume": int(row["Volume"])
+        }
+        prices.append(price_dict)
+
+    # Save to cache
+    write_cache("price_history", ticker, prices, cache_key)
+    return prices
 
 
 def prices_to_df(prices: List[Dict[str, Any]]) -> pd.DataFrame:
@@ -226,6 +389,12 @@ def prices_to_df(prices: List[Dict[str, Any]]) -> pd.DataFrame:
 def get_price_data(ticker: str, start_date: str, end_date: str) -> pd.DataFrame:
     """获取价格数据并转换为DataFrame格式"""
     try:
+        # Check cache first
+        cache_key = f"{start_date}_{end_date}"
+        cached_data = read_cache("price_history", ticker, cache_key)
+        if cached_data:
+            return pd.DataFrame(cached_data).set_index("time")
+
         # 将日期字符串转换为datetime对象
         start = datetime.strptime(start_date, "%Y-%m-%d")
         end = datetime.strptime(end_date, "%Y-%m-%d")
@@ -262,7 +431,24 @@ def get_price_data(ticker: str, start_date: str, end_date: str) -> pd.DataFrame:
         df = df[["Date", "open", "high", "low", "close", "volume"]]
         df = df.set_index("Date")
 
-        return df
+        # Convert to list format for caching
+        prices = []
+        for date, row in df.iterrows():
+            price_dict = {
+                "time": date.strftime("%Y-%m-%d"),
+                "open": float(row["Open"]),
+                "high": float(row["High"]),
+                "low": float(row["Low"]),
+                "close": float(row["Close"]),
+                "volume": int(row["Volume"])
+            }
+            prices.append(price_dict)
+
+        # Save to cache
+        write_cache("price_history", ticker, prices, cache_key)
+
+        # Return DataFrame
+        return pd.DataFrame(prices).set_index("time")
 
     except Exception as e:
         print(f"Error in get_price_data for {ticker}: {str(e)}")

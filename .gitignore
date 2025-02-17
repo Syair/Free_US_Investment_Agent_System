@@ -45,3 +45,6 @@ Thumbs.db
 logs/
 references/
 src/data/
+
+node_modules/
+src/web/frontend/node_modules/

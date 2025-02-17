@@ -1,0 +1,26 @@
+{
+  "name": "free_us_investment_agent_system",
+  "version": "1.0.0",
+  "description": "A sophisticated AI-powered investment agent system for US stock market analysis and trading decisions, leveraging yfinance for market data and AlphaVantage for news sentiment analysis.",
+  "main": "src/web/server.js",
+  "scripts": {
+    "start": "concurrently \"npm run start:frontend\" \"npm run start:node\" \"npm run start:python\"",
+    "start:frontend": "cd src/web/frontend && npm run dev",
+    "start:node": "nodemon src/web/server.js",
+    "start:python": "uvicorn src.web.api:app --reload --port 8000",
+    "build": "cd src/web/frontend && npm run build",
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "dependencies": {
+    "cors": "^2.8.5",
+    "express": "^4.18.2",
+    "http-proxy-middleware": "^2.0.6"
+  },
+  "devDependencies": {
+    "concurrently": "^8.2.2",
+    "nodemon": "^3.0.3"
+  }
+}
