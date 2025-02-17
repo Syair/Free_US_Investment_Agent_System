@@ -129,25 +129,97 @@ async def health_check():
 
 @app.get("/api/trading-status")
 async def get_trading_status():
-    if not current_trading_state["is_trading"]:
-        raise HTTPException(status_code=404, detail="No active trading session")
+    default_portfolio = {
+        "decision": "No trading decision yet",
+        "reasoning": "Trading session has not started",
+        "portfolio": {
+            "cash": 0,
+            "stock": 0
+        }
+    }
     
+    default_parameters = {
+        "ticker": "",
+        "start_date": datetime.now().strftime('%Y-%m-%d'),
+        "end_date": datetime.now().strftime('%Y-%m-%d'),
+        "initial_capital": 0
+    }
+
     return {
-        "status": "active" if current_trading_state["is_trading"] else "inactive",
-        "result": current_trading_state["portfolio"],
-        "last_update": current_trading_state["last_update"]
+        "status": "inactive" if not current_trading_state["is_trading"] else "active",
+        "result": current_trading_state["portfolio"] or default_portfolio,
+        "parameters": default_parameters,
+        "last_update": current_trading_state["last_update"] or datetime.now().isoformat()
     }
 
 @app.get("/api/trading-results", response_model=List[PortfolioData])
 async def get_trading_results():
     if not current_trading_state["portfolio_history"]:
-        raise HTTPException(status_code=404, detail="No trading history available")
+        # Return initial sample data points
+        now = datetime.now()
+        initial_data = [
+            {
+                "timestamp": (now - timedelta(hours=2)).isoformat(),
+                "portfolio_value": 100000.0,
+                "cash": 100000.0,
+                "stock_value": 0.0
+            },
+            {
+                "timestamp": (now - timedelta(hours=1)).isoformat(),
+                "portfolio_value": 100000.0,
+                "cash": 100000.0,
+                "stock_value": 0.0
+            },
+            {
+                "timestamp": now.isoformat(),
+                "portfolio_value": 100000.0,
+                "cash": 100000.0,
+                "stock_value": 0.0
+            }
+        ]
+        return initial_data
     
     return current_trading_state["portfolio_history"]
 
 @app.get("/api/agent-data", response_model=List[AgentData])
 async def get_agent_data():
     if not current_trading_state["agent_data"]:
-        raise HTTPException(status_code=404, detail="No agent data available")
+        # Return initial sample data
+        initial_agents = [
+            {
+                "agent_name": "market_data_agent",
+                "analysis": "Waiting for market data analysis",
+                "decision": "No decision yet",
+                "confidence": 0.0,
+                "metrics": {
+                    "volume": 0,
+                    "price_change": 0.0,
+                    "volatility": 0.0
+                }
+            },
+            {
+                "agent_name": "technical_agent",
+                "analysis": "Waiting for technical analysis",
+                "decision": "No decision yet",
+                "confidence": 0.0,
+                "metrics": {
+                    "rsi": 0.0,
+                    "macd": 0.0,
+                    "moving_average": 0.0
+                }
+            },
+            {
+                "agent_name": "sentiment_agent",
+                "analysis": "Waiting for sentiment analysis",
+                "decision": "No decision yet",
+                "confidence": 0.0,
+                "metrics": {
+                    "sentiment_score": 0.0,
+                    "news_count": 0,
+                    "market_sentiment": 0.0
+                }
+            }
+        ]
+        return initial_agents
     
     return current_trading_state["agent_data"]
