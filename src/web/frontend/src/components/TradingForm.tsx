@@ -8,7 +8,7 @@ import {
   FormControlLabel,
   Switch,
 } from '@mui/material';
-import { useMutation } from 'react-query';
+import { useMutation, useQueryClient } from 'react-query';
 import axios from 'axios';
 
 interface TradingFormData {
@@ -21,6 +21,7 @@ interface TradingFormData {
 }
 
 export default function TradingForm() {
+  const queryClient = useQueryClient();
   const [formData, setFormData] = useState<TradingFormData>({
     ticker: '',
     startDate: '',
@@ -43,9 +44,14 @@ export default function TradingForm() {
     {
       onSuccess: (response) => {
         console.log('Trading started:', response.data);
+        // Invalidate queries to refresh data
+        queryClient.invalidateQueries('tradingStatus');
+        queryClient.invalidateQueries('portfolioHistory');
+        queryClient.invalidateQueries('agentData');
       },
       onError: (error) => {
         console.error('Error starting trading:', error);
+        alert('Failed to start trading. Please try again.');
       },
     }
   );

@@ -1,5 +1,7 @@
 from datetime import datetime, timedelta
 import argparse
+import pandas as pd
+import os
 from agents.valuation import valuation_agent
 from agents.state import AgentState
 from agents.sentiment import sentiment_agent
@@ -66,11 +68,63 @@ workflow.add_edge("portfolio_management_agent", END)
 app = workflow.compile()
 
 # Add this at the bottom of the file
+def process_tickers_from_file(file_path: str, start_date: str = None, end_date: str = None, 
+                            show_reasoning: bool = False, initial_capital: float = 100000.0, 
+                            num_of_news: int = 5) -> pd.DataFrame:
+    """
+    Process multiple tickers from a file and return results as a DataFrame
+    """
+    # Read tickers from file
+    with open(file_path, 'r') as f:
+        tickers = [line.strip() for line in f if line.strip()]
+    
+    # Set default dates if not provided
+    if not end_date:
+        end_date = datetime.now().strftime('%Y-%m-%d')
+    if not start_date:
+        end_date_obj = datetime.strptime(end_date, '%Y-%m-%d')
+        start_date_obj = end_date_obj - timedelta(days=90)
+        start_date = start_date_obj.strftime('%Y-%m-%d')
+
+    # Process each ticker
+    results = []
+    for ticker in tickers:
+        try:
+            portfolio = {
+                "cash": initial_capital,
+                "stock": 0
+            }
+            result = run_hedge_fund(
+                ticker=ticker,
+                start_date=start_date,
+                end_date=end_date,
+                portfolio=portfolio,
+                show_reasoning=show_reasoning,
+                num_of_news=num_of_news
+            )
+            results.append({
+                'ticker': ticker,
+                'analysis_date': end_date,
+                'result': result
+            })
+            print(f"Processed {ticker}")
+        except Exception as e:
+            print(f"Error processing {ticker}: {str(e)}")
+            results.append({
+                'ticker': ticker,
+                'analysis_date': end_date,
+                'result': f"Error: {str(e)}"
+            })
+    
+    return pd.DataFrame(results)
+
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(
         description='Run the hedge fund trading system')
-    parser.add_argument('--ticker', type=str, required=True,
+    parser.add_argument('--ticker', type=str,
                         help='Stock ticker symbol')
+    parser.add_argument('--tickers-file', type=str,
+                        help='Path to file containing list of tickers (one per line)')
     parser.add_argument('--start-date', type=str,
                         help='Start date (YYYY-MM-DD). Defaults to 3 months before end date')
     parser.add_argument('--end-date', type=str,
@@ -120,13 +174,38 @@ if __name__ == "__main__":
         "stock": 0  # No initial stock position
     }
 
-    result = run_hedge_fund(
-        ticker=args.ticker,
-        start_date=args.start_date,
-        end_date=args.end_date,
-        portfolio=portfolio,
-        show_reasoning=args.show_reasoning,
-        num_of_news=args.num_of_news
-    )
-    print("\nFinal Result:")
-    print(result)
+    if args.ticker and args.tickers_file:
+        raise ValueError("Cannot specify both --ticker and --tickers-file")
+    if not args.ticker and not args.tickers_file:
+        raise ValueError("Must specify either --ticker or --tickers-file")
+
+    if args.tickers_file:
+        # Process multiple tickers and export to Excel
+        results_df = process_tickers_from_file(
+            file_path=args.tickers_file,
+            start_date=args.start_date,
+            end_date=args.end_date,
+            show_reasoning=args.show_reasoning,
+            initial_capital=args.initial_capital,
+            num_of_news=args.num_of_news
+        )
+        
+        # Create output directory if it doesn't exist
+        os.makedirs('analysis_results', exist_ok=True)
+        
+        # Export to Excel with today's date
+        output_file = f'analysis_results/hedge_fund_analysis_{datetime.now().strftime("%Y%m%d")}.xlsx'
+        results_df.to_excel(output_file, index=False)
+        print(f"\nResults exported to: {output_file}")
+    else:
+        # Single ticker processing
+        result = run_hedge_fund(
+            ticker=args.ticker,
+            start_date=args.start_date,
+            end_date=args.end_date,
+            portfolio=portfolio,
+            show_reasoning=args.show_reasoning,
+            num_of_news=args.num_of_news
+        )
+        print("\nFinal Result:")
+        print(result)

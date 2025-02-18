@@ -1,10 +1,16 @@
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from datetime import datetime, timedelta
 from typing import Dict, Optional, List
 import sys
 import os
+import logging
+import traceback
+
+# Configure logging
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 
 # Add the parent directory to the Python path so we can import from src
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -53,7 +59,9 @@ current_trading_state = {
 }
 
 @app.post("/api/start-trading")
-async def start_trading(request: TradingRequest):
+async def start_trading(request: TradingRequest, raw_request: Request):
+    logger.info(f"Received trading request: {request.dict()}")
+    logger.info(f"Request headers: {dict(raw_request.headers)}")
     try:
         # Set default dates if not provided
         if not request.end_date:
@@ -84,27 +92,57 @@ async def start_trading(request: TradingRequest):
             "stock": 0
         }
 
-        # Run the hedge fund
-        result = run_hedge_fund(
-            ticker=request.ticker,
-            start_date=request.start_date,
-            end_date=request.end_date,
-            portfolio=portfolio,
-            show_reasoning=request.show_reasoning,
-            num_of_news=request.num_of_news
-        )
+        logger.info("Starting hedge fund execution...")
+        try:
+            # Run the hedge fund
+            result = run_hedge_fund(
+                ticker=request.ticker,
+                start_date=request.start_date,
+                end_date=request.end_date,
+                portfolio=portfolio,
+                show_reasoning=request.show_reasoning,
+                num_of_news=request.num_of_news
+            )
+            logger.info(f"Hedge fund execution completed. Result: {result}")
+        except Exception as e:
+            logger.error(f"Error in run_hedge_fund: {str(e)}")
+            logger.error(f"Traceback: {traceback.format_exc()}")
+            raise HTTPException(status_code=500, detail=f"Hedge fund execution failed: {str(e)}")
+
+        logger.info("Parsing result...")
+        try:
+            result_data = eval(result)
+            logger.info(f"Parsed result data: {result_data}")
+            if not isinstance(result_data, dict):
+                raise ValueError("Result is not a dictionary")
+        except Exception as e:
+            print(f"Error parsing result: {e}")
+            result_data = {
+                "decision": str(result),
+                "reasoning": "",
+                "portfolio": portfolio,
+                "current_price": 0,
+                "agents": []
+            }
 
         # Update trading state
         current_trading_state["is_trading"] = True
-        current_trading_state["portfolio"] = result
+        current_trading_state["portfolio"] = result_data
         current_trading_state["last_update"] = datetime.now().isoformat()
         
+        # Update agent data if available
+        if "agents" in result_data:
+            current_trading_state["agent_data"] = result_data["agents"]
+        
         # Add to portfolio history
+        portfolio_value = result_data["portfolio"]["cash"] + (
+            result_data["portfolio"]["stock"] * result_data.get("current_price", 0)
+        )
         current_trading_state["portfolio_history"].append({
             "timestamp": datetime.now().isoformat(),
-            "portfolio_value": portfolio["cash"] + (portfolio["stock"] * result.get("current_price", 0)),
-            "cash": portfolio["cash"],
-            "stock_value": portfolio["stock"] * result.get("current_price", 0)
+            "portfolio_value": portfolio_value,
+            "cash": result_data["portfolio"]["cash"],
+            "stock_value": result_data["portfolio"]["stock"] * result_data.get("current_price", 0)
         })
 
         return {
@@ -121,6 +159,8 @@ async def start_trading(request: TradingRequest):
         }
 
     except Exception as e:
+        logger.error(f"Error in start_trading: {str(e)}")
+        logger.error(f"Traceback: {traceback.format_exc()}")
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.get("/api/health")

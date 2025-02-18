@@ -9,7 +9,9 @@
     "start:node": "nodemon src/web/server.js",
     "start:python": "poetry run uvicorn src.web.api:app --reload --port 8000",
     "build": "cd src/web/frontend && npm run build",
-    "test": "echo \"Error: no test specified\" && exit 1"
+    "test": "echo \"Error: no test specified\" && exit 1",
+    "analyze-tickers": "poetry run python src/main.py --tickers-file sample_tickers.txt",
+    "analyze-tickers:custom": "poetry run python src/main.py --tickers-file"
   },
   "keywords": [],
   "author": "",

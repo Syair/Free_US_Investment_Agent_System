@@ -119,9 +119,56 @@ def portfolio_management_agent(state: AgentState):
         }
         '''
 
+    # Get current price from market data
+    market_data = next(msg for msg in state["messages"] if msg.name == "market_data_agent")
+    try:
+        market_data_content = eval(market_data.content)
+        current_price = market_data_content.get("current_price", 0)
+    except:
+        current_price = 0
+
+    # Parse all agent data
+    agents_data = []
+    for agent_name in ["market_data_agent", "technical_analyst_agent", "fundamentals_agent", "sentiment_agent", "valuation_agent", "risk_management_agent"]:
+        try:
+            agent_msg = next(msg for msg in state["messages"] if msg.name == agent_name)
+            agent_content = eval(agent_msg.content)
+            agents_data.append({
+                "agent_name": agent_name,
+                "analysis": agent_content.get("analysis", ""),
+                "decision": agent_content.get("decision", ""),
+                "confidence": agent_content.get("confidence", 0.0),
+                "metrics": agent_content.get("metrics", {})
+            })
+        except:
+            continue
+
+    # Parse portfolio manager's decision
+    try:
+        decision_data = eval(result)
+    except:
+        decision_data = {
+            "action": "hold",
+            "quantity": 0,
+            "confidence": 0.5,
+            "reasoning": "Failed to parse decision",
+            "agent_signals": []
+        }
+
+    # Combine all data
+    final_result = {
+        "decision": decision_data["action"],
+        "quantity": decision_data["quantity"],
+        "reasoning": decision_data["reasoning"],
+        "confidence": decision_data["confidence"],
+        "portfolio": portfolio,
+        "current_price": current_price,
+        "agents": agents_data
+    }
+
     # Create the portfolio management message
     message = HumanMessage(
-        content=result,
+        content=str(final_result),
         name="portfolio_management",
     )
 
