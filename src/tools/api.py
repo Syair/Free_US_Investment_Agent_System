@@ -1,11 +1,17 @@
 from typing import Dict, Any, List, Optional
 import pandas as pd
 import yfinance as yf
-from datetime import datetime, timedelta
+import datetime
 import random
 import json
 import os
 import pathlib
+import logging
+import time
+from functools import wraps
+
+logger = logging.getLogger('api')
+logger.setLevel(logging.DEBUG)
 
 # Cache directory setup
 CACHE_DIR = pathlib.Path("cache")
@@ -22,6 +28,26 @@ CACHE_DIRS = {
 for dir_path in CACHE_DIRS.values():
     dir_path.mkdir(parents=True, exist_ok=True)
 
+def retry_with_backoff(retries=3, backoff_in_seconds=1):
+    """Retry decorator with exponential backoff"""
+    def decorator(func):
+        @wraps(func)
+        def wrapper(*args, **kwargs):
+            x = 0
+            while True:
+                try:
+                    return func(*args, **kwargs)
+                except Exception as e:
+                    if x == retries:
+                        raise e
+                    wait = (backoff_in_seconds * 2 ** x + 
+                           random.uniform(0, 1))
+                    time.sleep(wait)
+                    x += 1
+                    logger.warning(f"Retrying {func.__name__} after error: {str(e)}")
+        return wrapper
+    return decorator
+
 def read_cache(cache_type: str, ticker: str, date: Optional[str] = None) -> Optional[Dict]:
     """Read data from cache"""
     cache_dir = CACHE_DIRS[cache_type]
@@ -35,7 +61,7 @@ def read_cache(cache_type: str, ticker: str, date: Optional[str] = None) -> Opti
             with open(cache_file, 'r') as f:
                 return json.load(f)
     except Exception as e:
-        print(f"Error reading cache for {ticker}: {e}")
+        logger.error(f"Error reading cache for {ticker}: {e}")
     return None
 
 def write_cache(cache_type: str, ticker: str, data: Any, date: Optional[str] = None):
@@ -52,39 +78,43 @@ def write_cache(cache_type: str, ticker: str, data: Any, date: Optional[str] = N
         with open(cache_file, 'w') as f:
             json.dump(data, f, indent=2, default=str)
     except Exception as e:
-        print(f"Error writing cache for {ticker}: {e}")
+        logger.error(f"Error writing cache for {ticker}: {e}")
 
-
+@retry_with_backoff(retries=3)
 def get_financial_metrics(ticker: str) -> Dict[str, Any]:
-    """获取财务指标数据，包含缓存机制和时间戳"""
-    stock = yf.Ticker(ticker)
-    info = stock.info
+    logger.info(f"Getting financial metrics for {ticker}")
 
+    # Check cache first
+    cached_data = read_cache("financial_metrics", ticker)
+    if cached_data:
+        return cached_data
+
+    stock = yf.Ticker(ticker)
     try:
-        # 获取财务数据
+        info = stock.info
         financials = stock.financials
+
         if financials.empty:
             raise ValueError("No financial data available")
 
-        # 获取最新财务数据的日期
+        # Get latest financial data date
         latest_date = financials.columns[0]
         days_since_update = (datetime.now() - latest_date).days
 
-        # 获取最新的财务数据
+        # Get latest financials
         latest_financials = financials.iloc[:, 0]
 
-        # 计算增长率（如果有上一期数据）
+        # Calculate growth rates
+        revenue_growth = 0
+        earnings_growth = 0
         if len(financials.columns) > 1:
             prev_financials = financials.iloc[:, 1]
             revenue_growth = (latest_financials.get("Total Revenue", 0) - prev_financials.get(
                 "Total Revenue", 0)) / prev_financials.get("Total Revenue", 1)
             earnings_growth = (latest_financials.get("Net Income", 0) - prev_financials.get(
                 "Net Income", 0)) / prev_financials.get("Net Income", 1)
-        else:
-            revenue_growth = 0
-            earnings_growth = 0
 
-        # 构建指标数据
+        # Build metrics
         metrics = {
             "market_cap": info.get("marketCap", 0),
             "pe_ratio": info.get("forwardPE", 0),
@@ -97,7 +127,7 @@ def get_financial_metrics(ticker: str) -> Dict[str, Any]:
             "operating_margin": info.get("operatingMargins", 0),
             "revenue_growth": revenue_growth,
             "earnings_growth": earnings_growth,
-            "book_value_growth": 0,  # yfinance 不提供这个数据，需要模拟
+            "book_value_growth": 0,  # Not provided by yfinance
             "current_ratio": info.get("currentRatio", 0),
             "debt_to_equity": info.get("debtToEquity", 0),
             "free_cash_flow_per_share": info.get("freeCashflow", 0) / info.get("sharesOutstanding", 1) if info.get("sharesOutstanding", 0) > 0 else 0,
@@ -105,16 +135,18 @@ def get_financial_metrics(ticker: str) -> Dict[str, Any]:
             "price_to_earnings_ratio": info.get("forwardPE", 0),
             "price_to_book_ratio": info.get("priceToBook", 0),
             "price_to_sales_ratio": info.get("priceToSalesTrailing12Months", 0),
-            # 添加数据时效性信息
             "data_timestamp": latest_date.strftime("%Y-%m-%d"),
             "days_since_update": days_since_update,
-            "is_data_recent": days_since_update <= 100  # 是否是最近一个季度的数据
+            "is_data_recent": days_since_update <= 100
         }
 
-        return [metrics]
+        result = [metrics]
+        # Save to cache
+        write_cache("financial_metrics", ticker, result)
+        return result
 
-    except Exception as e:
-        print(f"Error getting financial metrics: {e}")
+    except (json.JSONDecodeError, ValueError) as e:
+        logger.error(f"Data error for {ticker}: {str(e)}")
         return [{
             "market_cap": 0,
             "pe_ratio": 0,
@@ -139,10 +171,14 @@ def get_financial_metrics(ticker: str) -> Dict[str, Any]:
             "days_since_update": None,
             "is_data_recent": False
         }]
+    except Exception as e:
+        logger.error(f"Unexpected error getting financial metrics for {ticker}: {str(e)}")
+        raise
 
-
+@retry_with_backoff(retries=3)
 def get_financial_statements(ticker: str) -> Dict[str, Any]:
-    """获取财务报表数据"""
+    logger.info(f"Getting financial statements for {ticker}")
+
     # Check cache first
     cached_data = read_cache("financial_statements", ticker)
     if cached_data:
@@ -151,11 +187,11 @@ def get_financial_statements(ticker: str) -> Dict[str, Any]:
     stock = yf.Ticker(ticker)
 
     try:
-        financials = stock.financials  # 获取所有财务数据
-        cash_flow = stock.cashflow     # 获取所有现金流数据
-        balance = stock.balance_sheet  # 获取所有资产负债表数据
+        financials = stock.financials
+        cash_flow = stock.cashflow
+        balance = stock.balance_sheet
 
-        # 准备最近两个季度的数据
+        # Prepare last two quarters data
         line_items = []
         for i in range(min(2, len(financials.columns))):
             current_financials = financials.iloc[:, i]
@@ -174,7 +210,7 @@ def get_financial_statements(ticker: str) -> Dict[str, Any]:
             }
             line_items.append(line_item)
 
-        # 如果只有一个季度的数据，复制一份作为前一季度
+        # If only one quarter, duplicate it
         if len(line_items) == 1:
             line_items.append(line_items[0])
 
@@ -183,8 +219,7 @@ def get_financial_statements(ticker: str) -> Dict[str, Any]:
         return line_items
 
     except Exception as e:
-        print(f"Warning: Error getting financial statements: {e}")
-        # 返回两个相同的默认数据
+        logger.warning(f"Error getting financial statements: {e}")
         default_item = {
             "free_cash_flow": 0,
             "net_income": 0,
@@ -194,9 +229,10 @@ def get_financial_statements(ticker: str) -> Dict[str, Any]:
         }
         return [default_item, default_item]
 
-
+@retry_with_backoff(retries=3)
 def get_insider_trades(ticker: str) -> List[Dict[str, Any]]:
-    """获取内部交易数据"""
+    logger.info(f"Getting insider trades for {ticker}")
+
     # Check cache first
     cached_data = read_cache("insider_trades", ticker)
     if cached_data:
@@ -204,7 +240,6 @@ def get_insider_trades(ticker: str) -> List[Dict[str, Any]]:
 
     stock = yf.Ticker(ticker)
     try:
-        # 获取实际的内部交易数据
         insider_trades = stock.insider_trades
         if insider_trades is None or insider_trades.empty:
             return []
@@ -223,12 +258,13 @@ def get_insider_trades(ticker: str) -> List[Dict[str, Any]]:
         write_cache("insider_trades", ticker, trades)
         return trades
     except Exception as e:
-        print(f"Warning: Error getting insider trades: {e}")
+        logger.warning(f"Error getting insider trades: {e}")
         return []
 
-
+@retry_with_backoff(retries=3)
 def get_market_data(ticker: str) -> Dict[str, Any]:
-    """获取市场数据，包括VIX和市场情绪指标"""
+    logger.info(f"Getting market data for {ticker}")
+
     # Check cache first
     cached_data = read_cache("market_data", ticker)
     if cached_data:
@@ -244,17 +280,17 @@ def get_market_data(ticker: str) -> Dict[str, Any]:
         current_vix = float(vix_info['Close'].iloc[-1])
         vix_50d_avg = float(vix_info['Close'].rolling(window=50).mean().iloc[-1])
     except Exception as e:
-        print(f"Warning: Error getting VIX data: {e}")
+        logger.warning(f"Error getting VIX data: {e}")
         current_vix = 0
         vix_50d_avg = 0
     
-    # Get Treasury yield for safe haven comparison
+    # Get Treasury yield
     try:
-        treasury = yf.Ticker("^TNX")  # 10-year Treasury yield
+        treasury = yf.Ticker("^TNX")
         treasury_info = treasury.history(period="5d")
         treasury_yield = float(treasury_info['Close'].iloc[-1])
     except Exception as e:
-        print(f"Warning: Error getting Treasury data: {e}")
+        logger.warning(f"Error getting Treasury data: {e}")
         treasury_yield = 0
 
     result = {
@@ -271,8 +307,10 @@ def get_market_data(ticker: str) -> Dict[str, Any]:
     write_cache("market_data", ticker, result)
     return result
 
+@retry_with_backoff(retries=3)
 def get_options_data(ticker: str) -> Dict[str, Any]:
-    """获取期权市场数据"""
+    logger.info(f"Getting options data for {ticker}")
+
     # Check cache first
     cached_data = read_cache("options_data", ticker)
     if cached_data:
@@ -316,7 +354,7 @@ def get_options_data(ticker: str) -> Dict[str, Any]:
         write_cache("options_data", ticker, result)
         return result
     except Exception as e:
-        print(f"Warning: Error getting options data: {e}")
+        logger.warning(f"Error getting options data: {e}")
         return {
             "expiration_date": None,
             "put_call_ratio": 0,
@@ -328,17 +366,18 @@ def get_options_data(ticker: str) -> Dict[str, Any]:
             "put_open_interest": 0
         }
 
-
+@retry_with_backoff(retries=3)
 def get_price_history(ticker: str, start_date: str = None, end_date: str = None) -> pd.DataFrame:
-    """获取历史价格数据，返回与原项目相同格式的数据"""
-    # 如果没有提供日期，默认获取过去3个月的数据
+    logger.info(f"Getting price history for {ticker} with start date {start_date} and end date {end_date}")
+
+    # Default to last 3 months if no dates provided
     if not end_date:
         end_date = datetime.now()
     else:
         end_date = datetime.strptime(end_date, "%Y-%m-%d")
 
     if not start_date:
-        start_date = end_date - timedelta(days=90)
+        start_date = end_date - datetime.timedelta(days=90)
     else:
         start_date = datetime.strptime(start_date, "%Y-%m-%d")
 
@@ -353,10 +392,10 @@ def get_price_history(ticker: str, start_date: str = None, end_date: str = None)
         return cached_data
 
     stock = yf.Ticker(ticker)
-    # 获取历史数据
-    df = stock.history(start=start_date, end=end_date)
+    # Get historical data
+    df = stock.history(period=start_date, end=end_date, interval="1d")
 
-    # 转换为原项目格式的列表
+    # Convert to list format
     prices = []
     for date, row in df.iterrows():
         price_dict = {
@@ -373,9 +412,8 @@ def get_price_history(ticker: str, start_date: str = None, end_date: str = None)
     write_cache("price_history", ticker, prices, cache_key)
     return prices
 
-
 def prices_to_df(prices: List[Dict[str, Any]]) -> pd.DataFrame:
-    """将价格列表转换为 DataFrame，保持与原项目相同的格式"""
+    """Convert price list to DataFrame"""
     df = pd.DataFrame(prices)
     df["Date"] = pd.to_datetime(df["time"])
     df.set_index("Date", inplace=True)
@@ -385,9 +423,10 @@ def prices_to_df(prices: List[Dict[str, Any]]) -> pd.DataFrame:
     df.sort_index(inplace=True)
     return df
 
-
+@retry_with_backoff(retries=3)
 def get_price_data(ticker: str, start_date: str, end_date: str) -> pd.DataFrame:
-    """获取价格数据并转换为DataFrame格式"""
+    logger.info(f"Getting price data for {ticker}")
+    
     try:
         # Check cache first
         cache_key = f"{start_date}_{end_date}"
@@ -395,30 +434,29 @@ def get_price_data(ticker: str, start_date: str, end_date: str) -> pd.DataFrame:
         if cached_data:
             return pd.DataFrame(cached_data).set_index("time")
 
-        # 将日期字符串转换为datetime对象
+        # Convert date strings to datetime
         start = datetime.strptime(start_date, "%Y-%m-%d")
         end = datetime.strptime(end_date, "%Y-%m-%d")
 
-        # 如果是单日查询，扩展结束日期
+        # Extend end date if single day query
         if start == end:
-            end = start + timedelta(days=1)
+            end = start + datetime.timedelta(days=1)
 
         stock = yf.Ticker(ticker)
         df = stock.history(start=start, end=end)
 
         if df.empty:
-            print(
-                f"Warning: No price data found for {ticker} between {start_date} and {end_date}")
-            # 返回空DataFrame但包含所需的列
+            logger.warning(
+                f"No price data found for {ticker} between {start_date} and {end_date}")
             return pd.DataFrame(columns=["Date", "open", "high", "low", "close", "volume"])
 
-        # 重置索引，将日期变为列
+        # Reset index to make date a column
         df = df.reset_index()
 
-        # 确保日期列没有时区信息并格式化为字符串
+        # Ensure date has no timezone and format as string
         df["Date"] = df["Date"].dt.tz_localize(None).dt.strftime("%Y-%m-%d")
 
-        # 重命名列以匹配预期格式
+        # Rename columns to match expected format
         df = df.rename(columns={
             "Open": "open",
             "High": "high",
@@ -427,7 +465,7 @@ def get_price_data(ticker: str, start_date: str, end_date: str) -> pd.DataFrame:
             "Volume": "volume"
         })
 
-        # 选择需要的列并设置索引
+        # Select needed columns and set index
         df = df[["Date", "open", "high", "low", "close", "volume"]]
         df = df.set_index("Date")
 
@@ -435,12 +473,12 @@ def get_price_data(ticker: str, start_date: str, end_date: str) -> pd.DataFrame:
         prices = []
         for date, row in df.iterrows():
             price_dict = {
-                "time": date.strftime("%Y-%m-%d"),
-                "open": float(row["Open"]),
-                "high": float(row["High"]),
-                "low": float(row["Low"]),
-                "close": float(row["Close"]),
-                "volume": int(row["Volume"])
+                "time": date,
+                "open": float(row["open"]),
+                "high": float(row["high"]),
+                "low": float(row["low"]),
+                "close": float(row["close"]),
+                "volume": int(row["volume"])
             }
             prices.append(price_dict)
 
@@ -451,6 +489,5 @@ def get_price_data(ticker: str, start_date: str, end_date: str) -> pd.DataFrame:
         return pd.DataFrame(prices).set_index("time")
 
     except Exception as e:
-        print(f"Error in get_price_data for {ticker}: {str(e)}")
-        # 返回空DataFrame但包含所需的列
+        logger.error(f"Error in get_price_data for {ticker}: {str(e)}")
         return pd.DataFrame(columns=["Date", "open", "high", "low", "close", "volume"])

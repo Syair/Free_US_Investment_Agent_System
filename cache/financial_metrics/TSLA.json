@@ -1,0 +1,26 @@
+[
+  {
+    "market_cap": 1086540414976,
+    "pe_ratio": 104.259254,
+    "price_to_book": 14.899434,
+    "dividend_yield": 0,
+    "revenue": 97690000000.0,
+    "net_income": 7130000000.0,
+    "return_on_equity": 0.1042,
+    "net_margin": 0.07259,
+    "operating_margin": 0.06158,
+    "revenue_growth": 0.009475783534663594,
+    "earnings_growth": -0.5246349756650444,
+    "book_value_growth": 0,
+    "current_ratio": 2.025,
+    "debt_to_equity": 18.489,
+    "free_cash_flow_per_share": -0.25707131448042114,
+    "earnings_per_share": 2.03,
+    "price_to_earnings_ratio": 104.259254,
+    "price_to_book_ratio": 14.899434,
+    "price_to_sales_ratio": 11.12233,
+    "data_timestamp": "2024-12-31",
+    "days_since_update": 53,
+    "is_data_recent": true
+  }
+]

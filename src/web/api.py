@@ -1,12 +1,14 @@
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel
+from pydantic import BaseModel, validator
 from datetime import datetime, timedelta
 from typing import Dict, Optional, List
 import sys
 import os
 import logging
 import traceback
+import json
+from json.decoder import JSONDecodeError
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -36,6 +38,24 @@ class TradingRequest(BaseModel):
     show_reasoning: bool = False
     num_of_news: int = 5
 
+    @validator('ticker')
+    def validate_ticker(cls, v):
+        if not v or not isinstance(v, str):
+            raise ValueError('Ticker must be a non-empty string')
+        return v.upper()
+
+    @validator('initial_capital')
+    def validate_capital(cls, v):
+        if v <= 0:
+            raise ValueError('Initial capital must be greater than 0')
+        return v
+
+    @validator('num_of_news')
+    def validate_news_count(cls, v):
+        if not 1 <= v <= 100:
+            raise ValueError('Number of news articles must be between 1 and 100')
+        return v
+
 class AgentData(BaseModel):
     agent_name: str
     analysis: str
@@ -58,10 +78,25 @@ current_trading_state = {
     "portfolio_history": []
 }
 
+def format_error_response(error: Exception, status_code: int) -> Dict:
+    """Format error response with additional details"""
+    error_type = type(error).__name__
+    error_details = {
+        "error_type": error_type,
+        "message": str(error),
+        "status_code": status_code
+    }
+    
+    if hasattr(error, 'detail'):
+        error_details["detail"] = error.detail
+        
+    return error_details
+
 @app.post("/api/start-trading")
 async def start_trading(request: TradingRequest, raw_request: Request):
     logger.info(f"Received trading request: {request.dict()}")
     logger.info(f"Request headers: {dict(raw_request.headers)}")
+    
     try:
         # Set default dates if not provided
         if not request.end_date:
@@ -74,16 +109,33 @@ async def start_trading(request: TradingRequest, raw_request: Request):
 
         # Validate dates
         try:
-            datetime.strptime(request.start_date, '%Y-%m-%d')
-            datetime.strptime(request.end_date, '%Y-%m-%d')
+            start_date = datetime.strptime(request.start_date, '%Y-%m-%d')
+            end_date = datetime.strptime(request.end_date, '%Y-%m-%d')
+            
+            # Check if dates are in the future
+            if start_date > datetime.now() or end_date > datetime.now():
+                raise HTTPException(
+                    status_code=400,
+                    detail="Dates cannot be in the future"
+                )
+                
+            # Check if start date is after end date
+            if start_date > end_date:
+                raise HTTPException(
+                    status_code=400,
+                    detail="Start date cannot be after end date"
+                )
+                
+            # Check if date range is too large
+            if (end_date - start_date).days > 365:
+                raise HTTPException(
+                    status_code=400,
+                    detail="Date range cannot exceed 1 year"
+                )
         except ValueError:
-            raise HTTPException(status_code=400, detail="Invalid date format. Use YYYY-MM-DD")
-
-        # Validate num_of_news
-        if request.num_of_news < 1 or request.num_of_news > 100:
             raise HTTPException(
-                status_code=400, 
-                detail="Number of news articles must be between 1 and 100"
+                status_code=400,
+                detail="Invalid date format. Use YYYY-MM-DD"
             )
 
         # Configure portfolio
@@ -105,18 +157,39 @@ async def start_trading(request: TradingRequest, raw_request: Request):
             )
             logger.info(f"Hedge fund execution completed. Result: {result}")
         except Exception as e:
-            logger.error(f"Error in run_hedge_fund: {str(e)}")
+            error_msg = str(e)
+            status_code = 500
+            
+            # Handle specific error types
+            if "Too Many Requests" in error_msg:
+                status_code = 429
+                error_msg = "Rate limit exceeded. Please try again later."
+            elif "JSONDecodeError" in error_msg or "Expecting value" in error_msg:
+                status_code = 502
+                error_msg = "Unable to fetch market data. Please try again later."
+            elif "possibly delisted" in error_msg:
+                status_code = 404
+                error_msg = f"Stock {request.ticker} not found or possibly delisted."
+                
+            logger.error(f"Error in run_hedge_fund: {error_msg}")
             logger.error(f"Traceback: {traceback.format_exc()}")
-            raise HTTPException(status_code=500, detail=f"Hedge fund execution failed: {str(e)}")
+            raise HTTPException(
+                status_code=status_code,
+                detail=error_msg
+            )
 
         logger.info("Parsing result...")
         try:
-            result_data = eval(result)
+            if isinstance(result, str):
+                result_data = json.loads(result)
+            else:
+                result_data = result
+                
             logger.info(f"Parsed result data: {result_data}")
             if not isinstance(result_data, dict):
                 raise ValueError("Result is not a dictionary")
-        except Exception as e:
-            print(f"Error parsing result: {e}")
+        except (JSONDecodeError, ValueError) as e:
+            logger.error(f"Error parsing result: {e}")
             result_data = {
                 "decision": str(result),
                 "reasoning": "",
@@ -147,7 +220,7 @@ async def start_trading(request: TradingRequest, raw_request: Request):
 
         return {
             "status": "success",
-            "result": result,
+            "result": result_data,
             "parameters": {
                 "ticker": request.ticker,
                 "start_date": request.start_date,
@@ -158,10 +231,15 @@ async def start_trading(request: TradingRequest, raw_request: Request):
             }
         }
 
+    except HTTPException as e:
+        error_response = format_error_response(e, e.status_code)
+        logger.error(f"HTTP Exception: {error_response}")
+        raise HTTPException(status_code=e.status_code, detail=error_response)
     except Exception as e:
-        logger.error(f"Error in start_trading: {str(e)}")
+        error_response = format_error_response(e, 500)
+        logger.error(f"Unexpected error: {error_response}")
         logger.error(f"Traceback: {traceback.format_exc()}")
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail=error_response)
 
 @app.get("/api/health")
 async def health_check():

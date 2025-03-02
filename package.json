@@ -11,7 +11,8 @@
     "build": "cd src/web/frontend && npm run build",
     "test": "echo \"Error: no test specified\" && exit 1",
     "analyze-tickers": "poetry run python src/main.py --tickers-file sample_tickers.txt",
-    "analyze-tickers:custom": "poetry run python src/main.py --tickers-file"
+    "analyze-tickers:custom": "poetry run python src/main.py --tickers-file",
+    "installAll": "npm install && cd src/web/frontend && npm install && cd ../../.. && poetry install"
   },
   "keywords": [],
   "author": "",

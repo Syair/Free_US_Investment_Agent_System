@@ -1,0 +1,16 @@
+[
+  {
+    "free_cash_flow": 3581000000.0,
+    "net_income": 7130000000.0,
+    "depreciation_and_amortization": 5368000000.0,
+    "capital_expenditure": -11342000000.0,
+    "working_capital": 0
+  },
+  {
+    "free_cash_flow": 4357000000.0,
+    "net_income": 14999000000.0,
+    "depreciation_and_amortization": 4667000000.0,
+    "capital_expenditure": -8899000000.0,
+    "working_capital": 0
+  }
+]
